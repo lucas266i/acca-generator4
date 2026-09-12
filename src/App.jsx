@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import Auth from './components/Auth'
-import import { supabase } from './lib/supabase'
+import { supabase } from './lib/supabase'
 
 export default function App() {
   const [session, setSession] = useState(null)
