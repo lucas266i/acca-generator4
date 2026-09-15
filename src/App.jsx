@@ -1,3 +1,4 @@
+
 import React, { useCallback, useState } from 'react'
 import Auth from './components/Auth'
 import { supabase } from './lib/supabase'
@@ -5,6 +6,7 @@ import { supabase } from './lib/supabase'
 export default function App() {
   const [session, setSession] = useState(null)
   const [leagues, setLeagues] = useState([])
+  const [teams, setTeams] = useState([])
   const [apiError, setApiError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -14,6 +16,7 @@ export default function App() {
     if (supabase) await supabase.auth.signOut()
     setSession(null)
     setLeagues([])
+    setTeams([])
     setApiError('')
   }
 
@@ -26,6 +29,7 @@ export default function App() {
     setLoading(true)
     setApiError('')
     setLeagues([])
+    setTeams([])
 
     const { data, error } = await supabase.functions.invoke('football-data', {
       body: {
@@ -54,6 +58,48 @@ export default function App() {
     const results = data?.response?.response || []
 
     setLeagues(results)
+    setLoading(false)
+  }
+
+  async function loadTeams(leagueId) {
+    if (!supabase) {
+      setApiError('Supabase no está configurado.')
+      return
+    }
+
+    setLoading(true)
+    setApiError('')
+    setTeams([])
+
+    const { data, error } = await supabase.functions.invoke('football-data', {
+      body: {
+        action: 'sync_teams',
+        league: String(leagueId),
+        season: '2024',
+      },
+    })
+
+    if (error) {
+      setApiError(error.message || 'No se pudieron consultar los equipos.')
+      setLoading(false)
+      return
+    }
+
+    if (!data?.ok) {
+      setApiError(
+        data?.response?.errors?.plan ||
+          data?.error ||
+          'API-Football devolvió un error.'
+      )
+      setLoading(false)
+      return
+    }
+
+    const results = data?.response?.response || []
+
+    console.log('Equipos encontrados:', results)
+
+    setTeams(results)
     setLoading(false)
   }
 
@@ -107,9 +153,48 @@ export default function App() {
 
                     <div>
                       <strong>{item.league.name}</strong>
+
                       <p>
                         ID: {item.league.id} · Tipo: {item.league.type}
                       </p>
+
+                      <button
+                        onClick={() => loadTeams(item.league.id)}
+                        disabled={loading}
+                      >
+                        Cargar equipos
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {teams.length > 0 && (
+            <div className="placeholder">
+              <h2>{teams.length} equipos encontrados</h2>
+
+              <div className="league-list">
+                {teams.map((item) => (
+                  <div className="league-card" key={item.team.id}>
+                    <img
+                      src={item.team.logo}
+                      alt=""
+                      width="50"
+                      height="50"
+                    />
+
+                    <div>
+                      <strong>{item.team.name}</strong>
+
+                      <p>ID: {item.team.id}</p>
+
+                      <p>País: {item.team.country}</p>
+
+                      {item.venue?.name && (
+                        <p>Estadio: {item.venue.name}</p>
+                      )}
                     </div>
                   </div>
                 ))}
