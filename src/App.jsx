@@ -9,11 +9,17 @@ export default function App() {
   const [teams, setTeams] = useState([])
   const [apiError, setApiError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadingLeague, setLoadingLeague] = useState(null)
 
-  const authenticated = useCallback((s) => setSession(s), [])
+  const authenticated = useCallback((s) => {
+    setSession(s)
+  }, [])
 
   async function logout() {
-    if (supabase) await supabase.auth.signOut()
+    if (supabase) {
+      await supabase.auth.signOut()
+    }
+
     setSession(null)
     setLeagues([])
     setTeams([])
@@ -31,26 +37,28 @@ export default function App() {
     setLeagues([])
     setTeams([])
 
-    const { data, error } = await supabase.functions.invoke('football-data', {
-      body: {
-        action: 'leagues',
-        country: 'Colombia',
-        season: '2024',
-      },
-    })
+    const { data, error } = await supabase.functions.invoke(
+      'football-data',
+      {
+        body: {
+          action: 'leagues',
+          country: 'Colombia',
+          season: '2024',
+        },
+      }
+    )
+
+    console.log('Respuesta leagues:', data)
+    console.log('Error leagues:', error)
 
     if (error) {
-      setApiError(error.message || 'No se pudo consultar API-Football.')
+      setApiError(error.message || 'Error consultando API-Football.')
       setLoading(false)
       return
     }
 
     if (!data?.ok) {
-      setApiError(
-        data?.response?.errors?.plan ||
-          data?.error ||
-          'API-Football devolvió un error.'
-      )
+      setApiError(data?.error || 'API-Football devolvió un error.')
       setLoading(false)
       return
     }
@@ -67,40 +75,44 @@ export default function App() {
       return
     }
 
-    setLoading(true)
+    setLoadingLeague(leagueId)
     setApiError('')
     setTeams([])
 
-    const { data, error } = await supabase.functions.invoke('football-data', {
-      body: {
-        action: 'sync_teams',
-        league: String(leagueId),
-        season: '2024',
-      },
-    })
+    console.log('Cargando equipos:', leagueId)
+
+    const { data, error } = await supabase.functions.invoke(
+      'football-data',
+      {
+        body: {
+          action: 'sync_teams',
+          league: String(leagueId),
+          season: '2024',
+        },
+      }
+    )
+
+    console.log('Respuesta sync_teams:', data)
+    console.log('Error sync_teams:', error)
 
     if (error) {
-      setApiError(error.message || 'No se pudieron consultar los equipos.')
-      setLoading(false)
+      setApiError(error.message || 'Error cargando equipos.')
+      setLoadingLeague(null)
       return
     }
 
     if (!data?.ok) {
-      setApiError(
-        data?.response?.errors?.plan ||
-          data?.error ||
-          'API-Football devolvió un error.'
-      )
-      setLoading(false)
+      setApiError(data?.error || 'No se pudieron sincronizar los equipos.')
+      setLoadingLeague(null)
       return
     }
 
-    const results = data?.response?.response || []
+    const resultTeams = data?.teams || []
 
-    console.log('Equipos encontrados:', results)
+    console.log('Equipos sincronizados:', resultTeams)
 
-    setTeams(results)
-    setLoading(false)
+    setTeams(resultTeams)
+    setLoadingLeague(null)
   }
 
   if (!session) {
@@ -118,7 +130,9 @@ export default function App() {
 
         <p>Sesión activa para {session.user.email}</p>
 
-        <button onClick={logout}>Cerrar sesión</button>
+        <button onClick={logout}>
+          Cerrar sesión
+        </button>
 
         <div className="placeholder">
           <h2>Datos de fútbol</h2>
@@ -143,7 +157,10 @@ export default function App() {
 
               <div className="league-list">
                 {leagues.map((item) => (
-                  <div className="league-card" key={item.league.id}>
+                  <div
+                    className="league-card"
+                    key={item.league.id}
+                  >
                     <img
                       src={item.league.logo}
                       alt=""
@@ -160,41 +177,12 @@ export default function App() {
 
                       <button
                         onClick={() => loadTeams(item.league.id)}
-                        disabled={loading}
+                        disabled={loadingLeague === item.league.id}
                       >
-                        Cargar equipos
+                        {loadingLeague === item.league.id
+                          ? 'Cargando equipos...'
+                          : 'Cargar equipos'}
                       </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {teams.length > 0 && (
-            <div className="placeholder">
-              <h2>{teams.length} equipos encontrados</h2>
-
-              <div className="league-list">
-                {teams.map((item) => (
-                  <div className="league-card" key={item.team.id}>
-                    <img
-                      src={item.team.logo}
-                      alt=""
-                      width="50"
-                      height="50"
-                    />
-
-                    <div>
-                      <strong>{item.team.name}</strong>
-
-                      <p>ID: {item.team.id}</p>
-
-                      <p>País: {item.team.country}</p>
-
-                      {item.venue?.name && (
-                        <p>Estadio: {item.venue.name}</p>
-                      )}
                     </div>
                   </div>
                 ))}
@@ -203,12 +191,47 @@ export default function App() {
           )}
         </div>
 
+        {teams.length > 0 && (
+          <div className="placeholder">
+            <h2>{teams.length} equipos encontrados</h2>
+
+            <p>
+              Equipos sincronizados correctamente con Supabase.
+            </p>
+
+            <div className="team-list">
+              {teams.map((team) => (
+                <div
+                  className="league-card"
+                  key={team.id || team.external_id}
+                >
+                  <div>
+                    <strong>{team.name}</strong>
+
+                    <p>
+                      ID Supabase: {team.id}
+                    </p>
+
+                    <p>
+                      API-Football ID: {team.external_id}
+                    </p>
+
+                    <p>
+                      País: {team.country || 'No disponible'}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="placeholder">
           <h2>Motor ACCA</h2>
 
           <p>
-            Próximo: guardar las ligas seleccionadas en Supabase y después
-            obtener equipos y partidos.
+            Próximo paso: obtener y guardar partidos,
+            estadísticas y cuotas.
           </p>
         </div>
       </section>
