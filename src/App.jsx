@@ -1,218 +1,24 @@
-import React, { useCallback, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import Auth from './components/Auth'
 import { supabase } from './lib/supabase'
 
-const TIMEZONE = 'America/Bogota'
-const SEASONS = ['2024', '2025', '2026']
+const TZ='America/Bogota'
+function Stat({icon,label,value,sub,cls}){return <div className={'stat '+cls}><div className="icon">{icon}</div><div><small>{label}</small><strong>{value}</strong><em>{sub}</em></div></div>}
+function Bar({label,value}){return <div className="barrow"><span>{label}<b>{value}%</b></span><i><u style={{width:value+'%'}}/></i></div>}
 
-function formatDateTime(value) {
-  if (!value) return 'Fecha no disponible'
-  try {
-    return new Intl.DateTimeFormat('es-CO', {
-      timeZone: TIMEZONE, dateStyle: 'medium', timeStyle: 'short',
-    }).format(new Date(value))
-  } catch { return value }
-}
-
-function getStatusLabel(status) {
-  const labels = {
-    NS: 'Programado', TBD: 'Por confirmar', LIVE: 'En vivo', HT: 'Descanso',
-    FT: 'Finalizado', AET: 'Finalizado AET', PEN: 'Finalizado por penaltis',
-    PST: 'Pospuesto', CANC: 'Cancelado', ABD: 'Abandonado', '1H': '1.er tiempo', '2H': '2.º tiempo',
-  }
-  return labels[status] || status || 'Sin estado'
-}
-
-function isFutureMatch(match) {
-  const d = new Date(match?.kickoff_at)
-  return !Number.isNaN(d.getTime()) && d.getTime() > Date.now()
-}
-
-export default function App() {
-  const [session, setSession] = useState(null)
-  const [season, setSeason] = useState('2026')
-  const [leagues, setLeagues] = useState([])
-  const [teams, setTeams] = useState([])
-  const [matches, setMatches] = useState([])
-  const [selectedLeague, setSelectedLeague] = useState(null)
-  const [statsCount, setStatsCount] = useState(0)
-  const [apiError, setApiError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [busy, setBusy] = useState('')
-
-  const authenticated = useCallback((s) => setSession(s), [])
-
-  async function logout() {
-    if (supabase) await supabase.auth.signOut()
-    setSession(null); setLeagues([]); setTeams([]); setMatches([]); setSelectedLeague(null)
-  }
-
-  async function invoke(body) {
-    if (!supabase) throw new Error('Supabase no está configurado.')
-    const { data, error } = await supabase.functions.invoke('football-data', { body })
-    if (error) throw error
-    if (!data?.ok) throw new Error(data?.error || data?.response?.errors?.plan || 'La operación falló.')
-    return data
-  }
-
-  async function loadLeagues() {
-    setBusy('leagues'); setApiError('')
-    try {
-      const data = await invoke({ action: 'leagues', country: 'Colombia', season })
-      setLeagues(data?.response?.response || [])
-      setTeams([]); setMatches([]); setSelectedLeague(null); setStatsCount(0)
-    } catch (e) { setApiError(e?.message || 'Error consultando ligas.') }
-    finally { setBusy('') }
-  }
-
-  async function loadTeams(leagueId) {
-    setBusy(`teams-${leagueId}`); setApiError(''); setSelectedLeague(leagueId)
-    try {
-      const data = await invoke({ action: 'sync_teams', league: String(leagueId), season })
-      setTeams(data?.teams || [])
-    } catch (e) { setApiError(e?.message || 'Error sincronizando equipos.') }
-    finally { setBusy('') }
-  }
-
-  async function loadMatches(leagueId) {
-    setBusy(`matches-${leagueId}`); setApiError(''); setSelectedLeague(leagueId)
-    try {
-      const data = await invoke({ action: 'sync_fixtures', league: String(leagueId), season })
-      const synced = Array.isArray(data?.matches) ? data.matches : []
-      setMatches(synced)
-      if (!synced.length) setApiError(data?.warning || 'No se encontraron partidos.')
-    } catch (e) { setApiError(e?.message || 'Error sincronizando partidos.') }
-    finally { setBusy('') }
-  }
-
-  async function loadStoredMatches(leagueId) {
-    setBusy(`stored-${leagueId}`); setApiError(''); setSelectedLeague(leagueId)
-    try {
-      const { data, error } = await supabase.from('matches')
-        .select('id,league_id,home_team_id,away_team_id,kickoff_at,status,home_score,away_score,external_id,season,round')
-        .eq('league_id', leagueId).eq('season', season).order('kickoff_at', { ascending: true })
-      if (error) throw error
-      setMatches(data || [])
-    } catch (e) { setApiError(e?.message || 'Error leyendo partidos guardados.') }
-    finally { setBusy('') }
-  }
-
-  async function syncStatistics() {
-    if (!matches.length) {
-      setApiError('Primero sincroniza o carga partidos de una liga.')
-      return
-    }
-    setBusy('stats'); setApiError('')
-    try {
-      const ids = matches.map(m => m.external_id).filter(Boolean)
-      const data = await invoke({ action: 'sync_statistics', fixture_ids: ids })
-      setStatsCount(data?.saved || 0)
-    } catch (e) { setApiError(e?.message || 'Error sincronizando estadísticas.') }
-    finally { setBusy('') }
-  }
-
-  const teamMap = useMemo(() => new Map(teams.map(t => [String(t.id), t.name])), [teams])
-  const futureMatches = matches.filter(isFutureMatch)
-  const selectedLeagueObject = leagues.find(x => String(x?.league?.id) === String(selectedLeague))
-
-  if (!session) return <main><Auth onAuthenticated={authenticated} /></main>
-
-  return (
-    <main>
-      <section className="card">
-        <h1>ACCA Generator</h1>
-        <p>Sesión activa: <strong>{session.user.email}</strong></p>
-        <button onClick={logout}>Cerrar sesión</button>
-
-        <div className="placeholder">
-          <h2>Datos de fútbol</h2>
-          <p>Fuente: API-Football · Colombia · Zona horaria: {TIMEZONE}</p>
-          <label>
-            Temporada:{' '}
-            <select value={season} onChange={e => {
-              setSeason(e.target.value); setLeagues([]); setTeams([]); setMatches([]); setStatsCount(0)
-            }}>
-              {SEASONS.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-          <div style={{ marginTop: 12 }}>
-            <button onClick={loadLeagues} disabled={!!busy}>
-              {busy === 'leagues' ? 'Cargando...' : 'Cargar ligas Colombia'}
-            </button>
-          </div>
-          {apiError && <div className="message"><strong>Error:</strong> {apiError}</div>}
-        </div>
-
-        {leagues.length > 0 && (
-          <div className="placeholder">
-            <h2>{leagues.length} ligas encontradas · temporada {season}</h2>
-            <div className="league-list">
-              {leagues.map(item => {
-                const league = item?.league
-                if (!league?.id) return null
-                const id = league.id
-                return (
-                  <div className="league-card" key={id}>
-                    <div>
-                      <strong>{league.name}</strong>
-                      <p>ID API-Football: {id}</p>
-                      <button onClick={() => loadTeams(id)} disabled={!!busy}>
-                        {busy === `teams-${id}` ? 'Sincronizando...' : 'Sincronizar equipos'}
-                      </button>{' '}
-                      <button onClick={() => loadMatches(id)} disabled={!!busy}>
-                        {busy === `matches-${id}` ? 'Sincronizando...' : 'Sincronizar partidos'}
-                      </button>{' '}
-                      <button onClick={() => loadStoredMatches(id)} disabled={!!busy}>
-                        {busy === `stored-${id}` ? 'Leyendo...' : 'Leer guardados'}
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {teams.length > 0 && (
-          <div className="placeholder">
-            <h2>{teams.length} equipos</h2>
-            <div className="team-list">
-              {teams.map(t => <div className="league-card" key={t.id || t.external_id}>
-                <strong>{t.name}</strong><p>API-Football ID: {t.external_id}</p>
-              </div>)}
-            </div>
-          </div>
-        )}
-
-        {matches.length > 0 && (
-          <div className="placeholder">
-            <h2>Partidos · {selectedLeagueObject?.league?.name || `Liga ${selectedLeague}`}</h2>
-            <p>Total: <strong>{matches.length}</strong> · Próximos: <strong>{futureMatches.length}</strong></p>
-            <button onClick={syncStatistics} disabled={!!busy}>
-              {busy === 'stats' ? 'Sincronizando estadísticas...' : 'Sincronizar estadísticas'}
-            </button>
-            {statsCount > 0 && <p>Estadísticas guardadas en esta operación: <strong>{statsCount}</strong></p>}
-            <div className="league-list">
-              {matches.map(m => (
-                <div className="league-card" key={m.id || m.external_id}>
-                  <strong>{teamMap.get(String(m.home_team_id)) || `Equipo #${m.home_team_id}`}</strong>
-                  {' vs '}
-                  <strong>{teamMap.get(String(m.away_team_id)) || `Equipo #${m.away_team_id}`}</strong>
-                  <p>{formatDateTime(m.kickoff_at)} · {getStatusLabel(m.status)}</p>
-                  <p>{m.round || 'Jornada no disponible'} · {m.home_score ?? '-'} - {m.away_score ?? '-'}</p>
-                  <p>Fixture ID: {m.external_id}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="placeholder">
-          <h2>Motor ACCA</h2>
-          <p>Base de datos preparada para temporadas múltiples y estadísticas por equipo/partido.</p>
-          <p>Próxima capa: forma, local/visitante, H2H, probabilidades y optimizador ACCA.</p>
-        </div>
-      </section>
-    </main>
-  )
-}
+export default function App(){
+ const [session,setSession]=useState(null),[leagues,setLeagues]=useState([]),[matches,setMatches]=useState([]),[league,setLeague]=useState(''),[market,setMarket]=useState('Todos'),[min,setMin]=useState(70),[loading,setLoading]=useState(true),[error,setError]=useState('')
+ useEffect(()=>{supabase.auth.getSession().then(({data})=>setSession(data.session));const {data:{subscription}}=supabase.auth.onAuthStateChange((_e,s)=>setSession(s));return()=>subscription.unsubscribe()},[])
+ useEffect(()=>{if(session)load()},[session])
+ async function load(){setLoading(true);setError('');try{const [a,b]=await Promise.all([supabase.from('leagues').select('id,name,country').eq('is_active',true).order('name'),supabase.from('matches').select('id,league_id,home_team_id,away_team_id,kickoff_at,status,home_score,away_score').order('kickoff_at').limit(300)]);if(a.error)throw a.error;if(b.error)throw b.error;setLeagues(a.data||[]);setMatches(b.data||[])}catch(e){setError(e.message)}finally{setLoading(false)}}
+ const lm=useMemo(()=>new Map(leagues.map(x=>[x.id,x.name])),[leagues]), filtered=matches.filter(x=>!league||String(x.league_id)===league), upcoming=filtered.filter(x=>new Date(x.kickoff_at)>new Date()), finished=filtered.filter(x=>x.home_score!=null&&x.away_score!=null), live=filtered.filter(x=>['LIVE','1H','2H','HT'].includes(x.status)).length
+ if(!session)return <main><Auth onAuthenticated={setSession}/></main>
+ return <div className="shell"><aside><div className="brand"><b>A</b><div>ACCA<span>GENERATOR 4</span></div></div><nav><button className="active">⌂ Dashboard</button><button>⚽ Partidos</button><button>◈ Predicciones</button><button>▦ ACCA Builder</button><button>◒ Estadísticas</button><button>◷ Historial</button></nav><div className="sidebottom"><p>● Motor online <small>v0.1</small></p><button onClick={()=>supabase.auth.signOut()}>↪ Cerrar sesión</button></div></aside>
+ <section className="page"><header><div><small>CONTROL CENTER</small><h1>Dashboard</h1></div><div className="headright">● Bogotá · GMT-5 <span>{session.user.email}</span><button onClick={load}>↻</button></div></header>
+ {error&&<div className="alert">⚠ {error}</div>}
+ <div className="hero"><div><label>SMART FOOTBALL ANALYTICS</label><h2>Construye ACCAs con<br/><i>probabilidad y valor.</i></h2><p>Centro de control para analizar partidos, mercados y oportunidades.</p></div><strong>⚽</strong></div>
+ <div className="stats"><Stat icon="⚽" label="PARTIDOS" value={loading?'—':filtered.length} sub={upcoming.length+' próximos'} cls="p"/><Stat icon="◉" label="LIGAS" value={loading?'—':leagues.length} sub="Configuradas" cls="c"/><Stat icon="◆" label="FINALIZADOS" value={loading?'—':finished.length} sub="Históricos" cls="o"/><Stat icon="⚡" label="EN VIVO" value={live} sub="Estado actual" cls="g"/></div>
+ <div className="grid"><div className="panel"><div className="title"><div><h3>Próximos partidos</h3><p>America/Bogota</p></div><button onClick={load}>Actualizar</button></div><div className="filters"><select value={league} onChange={e=>setLeague(e.target.value)}><option value="">Todas las ligas</option>{leagues.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select><select value={market} onChange={e=>setMarket(e.target.value)}><option>Todos</option><option>1X2</option><option>BTTS</option><option>Over/Under</option><option>Corners</option><option>Cards</option><option>Shots</option></select><label>Prob. ≥ <input type="number" value={min} min="50" max="99" onChange={e=>setMin(e.target.value)}/> %</label></div>{upcoming.slice(0,8).map(m=><div className="match" key={m.id}><div><b>{new Date(m.kickoff_at).toLocaleDateString('es-CO',{day:'2-digit',month:'short',timeZone:TZ})}</b><small>{new Date(m.kickoff_at).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit',timeZone:TZ})}</small></div><strong>Equipo #{m.home_team_id} <span>vs</span> Equipo #{m.away_team_id}</strong><label>{lm.get(m.league_id)||'Liga'}</label><em>{Math.max(70,min)}%</em><button>→</button></div>)}{!upcoming.length&&<div className="empty">No hay próximos partidos almacenados todavía.</div>}</div>
+ <div className="panel health"><div className="title"><div><h3>Salud del motor</h3><p>Estado de componentes</p></div><mark>LIVE</mark></div><Bar label="Base de datos" value={100}/><Bar label="Team Metrics" value={100}/><Bar label="Features" value={85}/><Bar label="Predicciones" value={55}/><Bar label="Cuotas" value={15}/><div className="note">⚡ Datos externos pendientes de conexión completa</div></div></div>
+ <div className="bottom"><div className="panel acca"><label>ACCA ENGINE</label><h3>Generador preparado</h3><p>Probabilidad mínima <b>70%</b> · Cuota individual <b>1.30–2.20</b> · Total <b>5–200</b></p><button>ABRIR ACCA BUILDER →</button></div><div className="panel sources"><h3>Fuentes de datos</h3><div><span>API-Football</span><span>Sportmonks</span><span>Football-data</span><span>Flashscore*</span></div><small>* Fuente provisional / referencia pública</small></div></div>
+ </section></div>
