@@ -18,7 +18,7 @@ Deno.serve(async req=>{
    if(!league)return out({ok:false,error:"league is required"},400);const r=await api(`/teams?league=${encodeURIComponent(league)}&season=${encodeURIComponent(season)}`,key);if(action==="teams")return out({ok:true,action,response:r});
    const l=(await db.from("leagues").select("id,external_id,name").eq("external_id",league).maybeSingle()).data;if(!l)return out({ok:false,error:"League is not stored in Supabase"},409);
    const rows=(r.response??[]).filter((x:any)=>x?.team?.id&&x?.team?.name).map((x:any)=>({league_id:l.id,name:String(x.team.name),short_name:x.team.code?String(x.team.code):null,country:x.team.country?String(x.team.country):null,external_id:String(x.team.id),is_active:true}));
-   const up=await db.from("teams").upsert(rows,{onConflict:"external_id").select("id,league_id,name,short_name,country,external_id,is_active");if(up.error)throw up.error;return out({ok:true,action,season,league:l,fetched:rows.length,upserted:up.data?.length??0});
+   const up=await db.from("teams").upsert(rows,{onConflict:"external_id"}).select("id,league_id,name,short_name,country,external_id,is_active");if(up.error)throw up.error;return out({ok:true,action,season,league:l,fetched:rows.length,upserted:up.data?.length??0});
   }
   if(action==="sync_fixtures"){
    if(!league)return out({ok:false,error:"league is required"},400);const r=await api(`/fixtures?league=${encodeURIComponent(league)}&season=${encodeURIComponent(season)}`,key);const l=(await db.from("leagues").select("id,external_id,name").eq("external_id",league).maybeSingle()).data;if(!l)return out({ok:false,error:"League is not stored in Supabase"},409);
