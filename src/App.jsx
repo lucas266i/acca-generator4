@@ -41,15 +41,18 @@ export default function App() {
 
   async function syncData() {
     if (!supabase || syncing) return
-    setSyncing(true); setSyncMessage('Sincronizando ligas, equipos, partidos y estadísticas 2026…'); setError('')
+    setSyncing(true); setSyncMessage('Sincronizando TheSportsDB v2: ligas, equipos y próximos partidos…'); setError('')
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('football-sync-v1', { body: { mode: 'all', season: '2026' } })
+      const { data, error: fnError } = await supabase.functions.invoke('thesportsdb-sync', { body: { action: 'sync_all' } })
       if (fnError) throw fnError
-      if (data?.ok === false) throw new Error('La sincronización terminó con errores. Revisa el detalle del servicio.')
-      setSyncMessage(`Sincronización terminada: ${data?.leagues_ok ?? 0}/${data?.leagues_processed ?? 0} ligas procesadas.`)
+      if (data?.ok === false) throw new Error(data?.error || 'La sincronización terminó con errores.')
+      const results = Array.isArray(data?.results) ? data.results : []
+      const leaguesOk = results.filter(x => !x.error).length
+      const matches = results.reduce((n, x) => n + Number(x.matches || 0), 0)
+      setSyncMessage(`TheSportsDB v2: ${leaguesOk}/${results.length} ligas procesadas · ${matches} partidos actualizados.`)
       await loadDashboard()
     } catch (e) {
-      setError(e?.message || 'No se pudo ejecutar la sincronización.')
+      setError(e?.message || 'No se pudo ejecutar la sincronización TheSportsDB.')
       setSyncMessage('')
     } finally { setSyncing(false) }
   }
@@ -66,7 +69,7 @@ export default function App() {
   if (!session) return <main><Auth onAuthenticated={setSession} /></main>
 
   return <div className="shell">
-    <aside><div className="brand"><b>A</b><div>ACCA<span>GENERATOR 4</span></div></div><nav><button className="active">⌂ Dashboard</button><button>⚽ Partidos</button><button>◈ Predicciones</button><button>▦ ACCA Builder</button><button>◒ Estadísticas</button><button>◷ Historial</button></nav><div className="sidebottom"><p>● Motor online<small>v0.2</small></p><button onClick={() => supabase.auth.signOut()}>↪ Cerrar sesión</button></div></aside>
+    <aside><div className="brand"><b>A</b><div>ACCA<span>GENERATOR 4</span></div></div><nav><button className="active">⌂ Dashboard</button><button>⚽ Partidos</button><button>◈ Predicciones</button><button>▦ ACCA Builder</button><button>◒ Estadísticas</button><button>◷ Historial</button></nav><div className="sidebottom"><p>● Motor online<small>v0.3</small></p><button onClick={() => supabase.auth.signOut()}>↪ Cerrar sesión</button></div></aside>
     <section className="page">
       <header><div><small>CONTROL CENTER</small><h1>Dashboard</h1></div><div className="headright">● Bogotá · GMT-5<span>{session.user.email}</span><button onClick={loadDashboard}>↻</button></div></header>
       {error && <div className="alert">⚠ {error}</div>}{syncMessage && <div className="alert">⚡ {syncMessage}</div>}
@@ -74,14 +77,14 @@ export default function App() {
       <div className="stats"><Stat icon="⚽" label="PARTIDOS" value={loading ? '—' : filtered.length} sub={upcoming.length + ' próximos'} cls="p"/><Stat icon="◉" label="LIGAS" value={loading ? '—' : leagues.length} sub="Configuradas" cls="c"/><Stat icon="◆" label="FINALIZADOS" value={loading ? '—' : finished.length} sub="Con marcador" cls="o"/><Stat icon="⚡" label="EN VIVO" value={live} sub="Estado actual" cls="g"/></div>
       <div className="grid">
         <div className="panel">
-          <div className="title"><div><h3>{upcoming.length ? 'Próximos partidos' : 'Partidos disponibles'}</h3><p>America/Bogota · Datos reales de Supabase</p></div><div><button onClick={loadDashboard}>Actualizar</button>{' '}<button onClick={syncData} disabled={syncing}>{syncing ? 'Sincronizando…' : 'Sincronizar 2026'}</button></div></div>
+          <div className="title"><div><h3>{upcoming.length ? 'Próximos partidos' : 'Partidos disponibles'}</h3><p>America/Bogota · Datos reales de Supabase · Fuente: TheSportsDB v2</p></div><div><button onClick={loadDashboard}>Actualizar</button>{' '}<button onClick={syncData} disabled={syncing}>{syncing ? 'Sincronizando…' : 'Sincronizar TheSportsDB'}</button></div></div>
           <div className="filters"><select value={league} onChange={e => setLeague(e.target.value)}><option value="">Todas las ligas</option>{leagues.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select><select value={market} onChange={e => setMarket(e.target.value)}><option>Todos</option><option>1X2</option><option>BTTS</option><option>Over/Under</option><option>Corners</option><option>Cards</option><option>Shots</option></select><label>Prob. mínima <input type="number" value={min} min="50" max="99" onChange={e => setMin(Number(e.target.value) || 70)}/>%</label></div>
           {upcoming.length > 0 ? upcoming.slice(0, 8).map(x => <div className="match" key={x.id}><div><b>{formatDate(x.kickoff_at)}</b><small>{formatDate(x.kickoff_at, true)}</small></div><strong>{teamMap.get(String(x.home_team_id)) || 'Equipo #' + x.home_team_id}<span>vs</span>{teamMap.get(String(x.away_team_id)) || 'Equipo #' + x.away_team_id}</strong><label>{leagueMap.get(String(x.league_id)) || 'Liga'}</label><em>Sin predicción</em><button>→</button></div>) : latestHistorical.map(x => <div className="match" key={x.id}><div><b>{formatDate(x.kickoff_at)}</b><small>Finalizado</small></div><strong>{teamMap.get(String(x.home_team_id)) || 'Equipo #' + x.home_team_id}<span>{x.home_score}–{x.away_score}</span>{teamMap.get(String(x.away_team_id)) || 'Equipo #' + x.away_team_id}</strong><label>{leagueMap.get(String(x.league_id)) || 'Liga'}</label><em>Histórico</em><button>→</button></div>)}
-          {!loading && !upcoming.length && !latestHistorical.length && <div className="empty">No hay partidos disponibles para el filtro seleccionado.</div>}{!loading && !upcoming.length && latestHistorical.length > 0 && <div className="empty">No hay partidos futuros en la base de datos. Se muestran los últimos partidos históricos para verificar que la conexión funciona.</div>}
+          {!loading && !upcoming.length && !latestHistorical.length && <div className="empty">No hay partidos disponibles para el filtro seleccionado.</div>}{!loading && !upcoming.length && latestHistorical.length > 0 && <div className="empty">No hay partidos futuros en la base de datos. Pulsa “Sincronizar TheSportsDB” para actualizar los próximos partidos.</div>}
         </div>
-        <div className="panel health"><div className="title"><div><h3>Salud del motor</h3><p>Estado real de los módulos</p></div><mark>LIVE</mark></div><Bar label="Base de datos" value={100}/><Bar label="Equipos y ligas" value={100}/><Bar label="Estadísticas" value={0}/><Bar label="Predicciones" value={0}/><Bar label="Cuotas" value={0}/><div className="note">⚠ La base actual contiene datos históricos. Faltan estadísticas, cuotas y predicciones.</div></div>
+        <div className="panel health"><div className="title"><div><h3>Salud del motor</h3><p>Estado real de los módulos</p></div><mark>LIVE</mark></div><Bar label="Base de datos" value={100}/><Bar label="Equipos y ligas" value={100}/><Bar label="Estadísticas" value={0}/><Bar label="Predicciones" value={0}/><Bar label="Cuotas" value={0}/><div className="note">⚠ Datos de partidos sincronizados desde TheSportsDB v2. Estadísticas, cuotas y predicciones se conectarán en las siguientes fases.</div></div>
       </div>
-      <div className="bottom"><div className="panel acca"><label>ACCA ENGINE</label><h3>Generador preparado</h3><p>Objetivos configurados: probabilidad mínima <b>{min}%</b> · cuota individual <b>1.30–2.20</b> · cuota total <b>5–200</b></p><button>ABRIR ACCA BUILDER →</button></div><div className="panel sources"><h3>Fuentes de datos</h3><div><span>API-Football</span><span>Sportmonks</span><span>Football-data</span><span>Flashscore*</span></div><small>* Fuentes pendientes de conexión automática.</small></div></div>
+      <div className="bottom"><div className="panel acca"><label>ACCA ENGINE</label><h3>Generador preparado</h3><p>Objetivos configurados: probabilidad mínima <b>{min}%</b> · cuota individual <b>1.30–2.20</b> · cuota total <b>5–200</b></p><button>ABRIR ACCA BUILDER →</button></div><div className="panel sources"><h3>Fuentes de datos</h3><div><span>TheSportsDB v2</span><span>API-Football</span><span>Sportmonks</span><span>Football-data</span></div><small>TheSportsDB v2 es la fuente de sincronización activa del dashboard. Las demás quedan preparadas para fases posteriores.</small></div></div>
     </section>
   </div>
 }
