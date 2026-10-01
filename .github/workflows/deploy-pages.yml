@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -39,8 +39,94 @@ jobs:
           test -n "$VITE_SUPABASE_URL" || (echo "Missing VITE_SUPABASE_URL" && exit 1)
           test -n "$VITE_SUPABASE_ANON_KEY" || (echo "Missing VITE_SUPABASE_ANON_KEY" && exit 1)
 
-      - name: Build
+      - name: Repair ACCA Builder source
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('src/AppFixed4.jsx')
+          s = path.read_text(encoding='utf-8')
+
+          if 'selectedMatchIds' not in s:
+              s = s.replace(
+                  "const[syncing,setSyncing]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('')",
+                  "const[selectedMatchIds,setSelectedMatchIds]=useState([]),[syncing,setSyncing]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('')"
+              )
+
+          s = s.replace(
+              "return d>=bounds.s&&d<bounds.e&&d>now&&inGroup(m)&&marketOk(p)",
+              "return d>=bounds.s&&d<bounds.e&&d>now&&inGroup(m)&&marketOk(p)&&(selectedMatchIds.length===0||selectedMatchIds.includes(String(m.id)))"
+          )
+          s = s.replace(
+              "[predictions,matches,bounds,inGroup,marketMode,selectedMarkets,propMode,selectedProps,marketMap]",
+              "[predictions,matches,bounds,inGroup,marketMode,selectedMarkets,propMode,selectedProps,marketMap,selectedMatchIds]"
+          )
+
+          pattern = r" const accas=useMemo\(\(\)=>\{.*?\n \},\[candidates,countMode,fixedCount,desired,minTarget,maxTarget,maxPerMatch\]\)"
+          replacement = r''' const accas=useMemo(()=>{
+  const wanted=countMode==='manual'?fixedCount:null;
+  const beamWidth=250;
+  let states=[{picks:[],total:1,used:new Map()}];
+  const scored=[];
+  for(let step=0;step<(wanted||14);step++){
+    const next=[];
+    for(const st of states){
+      for(const r of candidates){
+        const mid=String(r.p.match_id),used=st.used.get(mid)||0;
+        if(used>=maxPerMatch)continue;
+        if(st.picks.some(x=>x.p.id===r.p.id))continue;
+        const n=st.total*Number(r.o.odd);
+        if(!Number.isFinite(n)||n>maxTarget)continue;
+        const used2=new Map(st.used);used2.set(mid,used+1);
+        next.push({picks:[...st.picks,r],total:n,used:used2});
+      }
+    }
+    next.sort((a,b)=>Math.abs(a.total-desired)-Math.abs(b.total-desired));
+    states=next.slice(0,beamWidth);
+    for(const st of states){
+      const okCount=!wanted||st.picks.length===wanted;
+      if(okCount&&st.picks.length>=2&&st.total>=minTarget&&st.total<=maxTarget){
+        scored.push({picks:st.picks,total:st.total,matches:new Set(st.picks.map(x=>String(x.p.match_id))).size});
+      }
+    }
+    if(scored.length>=30)break;
+  }
+  const unique=[];const seen=new Set();
+  scored.sort((a,b)=>Math.abs(a.total-desired)-Math.abs(b.total-desired));
+  for(const a of scored){const key=a.picks.map(x=>x.p.id).sort().join(',');if(seen.has(key))continue;seen.add(key);unique.push(a);if(unique.length>=10)break}
+  return unique;
+ },[candidates,countMode,fixedCount,desired,minTarget,maxTarget,maxPerMatch])'''
+          s,n=re.subn(pattern,replacement,s,count=1,flags=re.S)
+          if n!=1:
+              raise SystemExit('ACCA search block not found')
+
+          if 'Seleccionar para ACCA' not in s:
+              needle='<article className="match" key={m.id}><div><b>{matchName(m)}</b>'
+              repl='<article className="match" key={m.id}><button type="button" className={selectedMatchIds.includes(String(m.id))?"selected-match":""} onClick={()=>setSelectedMatchIds(x=>x.includes(String(m.id))?x.filter(id=>id!==String(m.id)):[...x,String(m.id)])}>{selectedMatchIds.includes(String(m.id))?"✓ Seleccionado":"Seleccionar para ACCA"}</button><div><b>{matchName(m)}</b>'
+              s=s.replace(needle,repl)
+
+          s=s.replace(
+              '<h3>Próximos partidos</h3><p>{upcoming.length} partidos disponibles en {dateLabel}</p>',
+              '<h3>Próximos partidos</h3><p>{upcoming.length} partidos disponibles en {dateLabel} · {selectedMatchIds.length} seleccionados para ACCA</p>'
+          )
+          path.write_text(s,encoding='utf-8')
+          PY
+
+      - name: Validate build
         run: npm run build
+
+      - name: Commit repaired source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/AppFixed4.jsx
+          if git diff --cached --quiet; then
+            echo "Source already repaired"
+          else
+            git commit -m "Fix ACCA selection and generation engine"
+            git push
+          fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
