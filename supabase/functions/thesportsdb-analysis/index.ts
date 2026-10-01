@@ -12,25 +12,31 @@ const rate=(a:boolean[])=>a.length?a.filter(Boolean).length/a.length:null;
 
 Deno.serve(async(req)=>{
   if(req.method==="OPTIONS") return new Response("ok",{headers:CORS});
+  if(req.method!=="POST") return out({ok:false,error:"Method not allowed"},405);
   try{
-    const url=Deno.env.get("SUPABASE_URL"),service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"),anon=Deno.env.get("SUPABASE_ANON_KEY");
-    if(!url||!service||!anon) return out({ok:false,error:"Supabase server configuration incomplete"},500);
-    const auth=createClient(url,anon,{auth:{persistSession:false,autoRefreshToken:false}});
+    const url=Deno.env.get("SUPABASE_URL"),service=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if(!url||!service) return out({ok:false,error:"Supabase server configuration incomplete: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing"},500);
+
     const token=req.headers.get("Authorization")?.replace(/^Bearer\s+/i,"");
     if(!token) return out({ok:false,error:"Authorization required"},401);
-    const user=await auth.auth.getUser(token);
-    if(user.error||!user.data.user) return out({ok:false,error:"Invalid session"},401);
+
+    // Validate the caller using the service-role client. This avoids depending on
+    // SUPABASE_ANON_KEY being exposed as an Edge Function environment variable.
     const db=createClient(url,service,{auth:{persistSession:false,autoRefreshToken:false}});
-    let body:any={}; try{body=await req.json()}catch{}
-    const ids=(body.fixture_ids||[]).map(String).filter(Boolean).slice(0,100);
-    if(!ids.length) return out({ok:false,error:"fixture_ids is required"},400);
+    const user=await db.auth.getUser(token);
+    if(user.error||!user.data.user) return out({ok:false,error:"Invalid or expired session"},401);
+
+    let body:any={};
+    try{body=await req.json()}catch{return out({ok:false,error:"Invalid JSON body"},400)}
+    const ids=(Array.isArray(body.fixture_ids)?body.fixture_ids:[]).map(String).filter(Boolean).slice(0,100);
+    if(!ids.length) return out({ok:false,error:"fixture_ids is required and must contain at least one fixture id"},400);
 
     const [mr,hr,markets]=await Promise.all([
       db.from("matches").select("id,external_id,kickoff_at,home_team_id,away_team_id,home_score,away_score").in("external_id",ids),
       db.from("matches").select("id,home_team_id,away_team_id,kickoff_at,home_score,away_score").not("home_score","is",null).not("away_score","is",null).order("kickoff_at",{ascending:false}).limit(5000),
       db.from("markets").select("id,code,name,category").eq("is_active",true)
     ]);
-    if(mr.error||hr.error||markets.error) return out({ok:false,error:(mr.error||hr.error||markets.error)?.message||"Database read failed",stage:"load"},200);
+    if(mr.error||hr.error||markets.error) return out({ok:false,error:(mr.error||hr.error||markets.error)?.message||"Database read failed",stage:"load"},500);
 
     const marketRows=markets.data||[];
     const mids=new Map(marketRows.map((m:any)=>[String(m.code).toUpperCase(),m.id]));
