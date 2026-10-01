@@ -1,1 +1,1 @@
-export { default } from './AppFixed'
+export { default } from './AppFixed2'
