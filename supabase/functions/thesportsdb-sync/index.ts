@@ -27,8 +27,6 @@ Deno.serve(async req=>{
 
   const errors:string[]=[];let eventsFetched=0,leaguesSaved=0,teamsSaved=0,matchesSaved=0;
   try{
-    // Network calls are parallel. Database work is deliberately batched to avoid
-    // one SELECT/INSERT round-trip per event, which previously made sync appear stuck.
     const days=await Promise.all(Array.from({length:8},(_,i)=>
       tsdb(`eventsday.php?d=${isoDate(i)}&s=Soccer`,key)
         .then(data=>({date:isoDate(i),events:Array.isArray(data?.events)?data.events:[]}))
@@ -48,14 +46,13 @@ Deno.serve(async req=>{
       return [external_id,{external_id,name:String(e.strLeague).trim(),country:e.strCountry?String(e.strCountry):null}];
     })).values()];
 
-    // Upsert leagues in bulk and read their ids once.
     for(const rows of chunk(uniqueLeagues,200)){
       const r=await db.from('leagues').upsert(rows,{onConflict:'external_id'}).select('id,external_id');
-      if(r.error)throw r.error;
+      if(r.error)throw new Error(`leagues upsert: ${r.error.message}`);
     }
     const leagueKeys=uniqueLeagues.map(x=>x.external_id);
     const leagueRows=leagueKeys.length?await db.from('leagues').select('id,external_id').in('external_id',leagueKeys):{data:[],error:null};
-    if(leagueRows.error)throw leagueRows.error;
+    if(leagueRows.error)throw new Error(`leagues lookup: ${leagueRows.error.message}`);
     const leagueMap=new Map((leagueRows.data||[]).map((x:any)=>[String(x.external_id),x.id]));
     leaguesSaved=uniqueLeagues.length;
 
@@ -68,12 +65,12 @@ Deno.serve(async req=>{
 
     for(const rows of chunk(teamRows,300)){
       const r=await db.from('teams').upsert(rows,{onConflict:'external_id'}).select('id,external_id');
-      if(r.error)throw r.error;
+      if(r.error)throw new Error(`teams upsert: ${r.error.message}`);
     }
     teamsSaved=teamRows.length;
     const teamKeys=teamRows.map((x:any)=>x.external_id);
     const teamDb=teamKeys.length?await db.from('teams').select('id,external_id').in('external_id',teamKeys):{data:[],error:null};
-    if(teamDb.error)throw teamDb.error;
+    if(teamDb.error)throw new Error(`teams lookup: ${teamDb.error.message}`);
     const teamMap=new Map((teamDb.data||[]).map((x:any)=>[String(x.external_id),x.id]));
 
     const matchRows=valid.map(e=>{
@@ -88,12 +85,12 @@ Deno.serve(async req=>{
 
     for(const rows of chunk(matchRows,300)){
       const r=await db.from('matches').upsert(rows,{onConflict:'external_id'});
-      if(r.error)throw r.error;
+      if(r.error)throw new Error(`matches upsert: ${r.error.message}`);
       matchesSaved+=rows.length;
     }
 
     return out({ok:errors.length===0,action,days:8,events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors});
   }catch(error){
-    return out({ok:false,action,error:error instanceof Error?error.message:String(error),events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors},502);
+    return out({ok:false,partial:true,action,error:error instanceof Error?error.message:String(error),events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors},200);
   }
 });
