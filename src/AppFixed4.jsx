@@ -51,7 +51,15 @@ export default function AppFixed4(){
  const candidates=useMemo(()=>{
   const best=new Map()
   for(const o of odds){const odd=Number(o.odd);if(!Number.isFinite(odd)||odd<=0)continue;const k=`${o.match_id}|${o.market_id}|${norm(o.selection)}`;const prev=best.get(k);if(!prev||odd>Number(prev.odd))best.set(k,o)}
-  return filtered.map(p=>{const key=`${p.match_id}|${p.market_id}|${norm(p.selection)}`;const o=best.get(key);const fair=Number(p.fair_odd);const fallback=Number.isFinite(fair)&&fair>0?{id:`fair-${p.id}`,match_id:p.match_id,market_id:p.market_id,selection:p.selection,odd:fair,bookmaker:'MODEL_FAIR'}:null;const price=o||fallback;return price?{p,o:price}:null}).filter(Boolean).filter(x=>Number(x.p.probability)>=minProb/100&&Number(x.o.odd)>=minOdd&&Number(x.o.odd)<=maxOdd).sort((a,b)=>Number(b.p.probability)-Number(a.p.probability))
+  return filtered.map(p=>{
+   const key=`${p.match_id}|${p.market_id}|${norm(p.selection)}`
+   const o=best.get(key)
+   const fair=Number(p.fair_odd)
+   const fairCandidate=Number.isFinite(fair)&&fair>0?{id:`fair-${p.id}`,match_id:p.match_id,market_id:p.market_id,selection:p.selection,odd:fair,bookmaker:'MODEL_FAIR'}:null
+   const prices=[o,fairCandidate].filter(Boolean).filter(x=>{const v=Number(x.odd);return Number.isFinite(v)&&v>=minOdd&&v<=maxOdd})
+   const price=prices.sort((a,b)=>Number(b.odd)-Number(a.odd))[0]||null
+   return price?{p,o:price}:null
+  }).filter(Boolean).filter(x=>Number(x.p.probability)>=minProb/100).sort((a,b)=>Number(b.p.probability)-Number(a.p.probability))
  },[filtered,odds,minProb,minOdd,maxOdd])
 
  const desired=targetMode==='manual'?Math.min(200,Math.max(5,Number(manualTarget)||5)):target
@@ -59,19 +67,20 @@ export default function AppFixed4(){
  const tolerance=Math.max(.5,desired*.15)
  const minTarget=Math.max(5,desired-tolerance),maxTarget=Math.min(200,desired+tolerance)
  const accas=useMemo(()=>{
-  const wanted=countMode==='manual'?fixedCount:null,beamWidth=500
+  const wanted=countMode==='manual'?fixedCount:null,beamWidth=1000
   let states=[{picks:[],total:1,used:new Map()}],results=[]
-  const maxSteps=Math.min(wanted||14,14)
+  const naturalSteps=Math.ceil(Math.log(Math.max(maxTarget,5))/Math.log(Math.max(minOdd,1.01)))+3
+  const maxSteps=Math.min(wanted||naturalSteps,40)
   for(let step=0;step<maxSteps;step++){
    const next=[]
    for(const st of states)for(const r of candidates){const mid=String(r.p.match_id),used=st.used.get(mid)||0;if(used>=maxPerMatch||st.picks.some(x=>x.p.id===r.p.id))continue;const odd=Number(r.o.odd),total=st.total*odd;if(!Number.isFinite(total)||total>maxTarget)continue;const used2=new Map(st.used);used2.set(mid,used+1);next.push({picks:[...st.picks,r],total,used:used2})}
    next.sort((a,b)=>Math.abs(a.total-desired)-Math.abs(b.total-desired));states=next.slice(0,beamWidth)
    for(const st of states){const okCount=!wanted||st.picks.length===wanted;if(st.picks.length>=2&&okCount&&st.total>=minTarget&&st.total<=maxTarget)results.push({picks:st.picks,total:st.total,matches:new Set(st.picks.map(x=>String(x.p.match_id))).size})}
    if(!states.length)break
-   if(results.length>80)break
+   if(results.length>100)break
   }
   const seen=new Set(),unique=[];results.sort((a,b)=>Math.abs(a.total-desired)-Math.abs(b.total-desired));for(const r of results){const key=r.picks.map(x=>x.p.id).sort().join(',');if(seen.has(key))continue;seen.add(key);unique.push(r);if(unique.length>=10)break}return unique
- },[candidates,countMode,fixedCount,desired,minTarget,maxTarget,maxPerMatch])
+ },[candidates,countMode,fixedCount,desired,minTarget,maxTarget,maxPerMatch,minOdd])
 
  const toggle=(value,setter,arr)=>setter(arr.includes(value)?arr.filter(x=>x!==value):[...arr,value])
  async function analyzeIds(ids){
@@ -105,7 +114,7 @@ export default function AppFixed4(){
  const content=()=>{
   if(page==='matches')return <><FilterPanel/><section className="panel"><div className="title"><div><h3>Próximos partidos</h3><p>{upcoming.length} partidos disponibles · {selectedMatchIds.length} seleccionados</p></div>{selectedMatchIds.length>0&&<button onClick={analyzeSelected} disabled={syncing}>Analizar seleccionados</button>}</div>{upcoming.slice(0,500).map(m=><FilteredMatchRow key={m.id} m={m}/>)}{!upcoming.length&&<div className="empty">No hay partidos para estos filtros.</div>}</section></>
   if(page==='predictions')return <><FilterPanel/><section className="panel"><div className="title"><h3>Predicciones</h3><span>{filtered.length} válidas</span></div>{filtered.length?filtered.slice(0,500).map(p=>{const m=matches.find(x=>String(x.id)===String(p.match_id));return <article className="match" key={p.id}><div><b>{matchName(m)}</b><small>{marketMap.get(String(p.market_id))?.name||marketMap.get(String(p.market_id))?.code} · {p.selection} · {pct(p.probability)}</small></div><strong>{Number(p.fair_odd||0).toFixed(2)}</strong></article>}):<div className="empty">No hay predicciones para estos filtros.</div>}</section></>
-  if(page==='acca')return <><FilterPanel/><section className="panel"><div className="title"><div><h3>ACCA Builder</h3><p>El motor usa predictions + MODEL_FAIR y ajusta automáticamente el número de partidos a la cuota objetivo.</p></div></div>{selectedMatchIds.length>0&&<div className="filter-summary">Partidos seleccionados: <b>{selectedMatchIds.length}</b>. <button onClick={analyzeSelected} disabled={syncing}>Analizar ahora</button></div>}{accas.length?accas.map((a,i)=><article className="acca" key={i}><b>ACCA #{i+1} · cuota {a.total.toFixed(2)} · {a.picks.length} selecciones · {a.matches} partidos</b>{a.picks.map((x,j)=>{const m=matches.find(z=>String(z.id)===String(x.p.match_id));return <div key={j}>{matchName(m)} · {marketMap.get(String(x.p.market_id))?.name||marketMap.get(String(x.p.market_id))?.code||'Mercado'} · {x.p.selection} · prob. {pct(x.p.probability)} · cuota {Number(x.o.odd).toFixed(2)} · {x.o.bookmaker||'MODEL_FAIR'}</div>})}</article>):<div className="empty"><b>No se encontró una ACCA con los filtros actuales.</b><br/>Candidatos válidos: {candidates.length}. Si un partido está seleccionado y no tiene análisis, pulsa «Analizar ahora». El motor puede usar el fair_odd guardado en la predicción como respaldo MODEL_FAIR.</div>}</section></>
+  if(page==='acca')return <><FilterPanel/><section className="panel"><div className="title"><div><h3>ACCA Builder</h3><p>El motor usa predictions + cuotas válidas (bookmaker o MODEL_FAIR) y calcula automáticamente las selecciones necesarias para alcanzar la cuota objetivo.</p></div></div>{selectedMatchIds.length>0&&<div className="filter-summary">Partidos seleccionados: <b>{selectedMatchIds.length}</b>. <button onClick={analyzeSelected} disabled={syncing}>Analizar ahora</button></div>}{accas.length?accas.map((a,i)=><article className="acca" key={i}><b>ACCA #{i+1} · cuota {a.total.toFixed(2)} · {a.picks.length} selecciones · {a.matches} partidos</b>{a.picks.map((x,j)=>{const m=matches.find(z=>String(z.id)===String(x.p.match_id));return <div key={j}>{matchName(m)} · {marketMap.get(String(x.p.market_id))?.name||marketMap.get(String(x.p.market_id))?.code||'Mercado'} · {x.p.selection} · prob. {pct(x.p.probability)} · cuota {Number(x.o.odd).toFixed(2)} · {x.o.bookmaker||'MODEL_FAIR'}</div>})}</article>):<div className="empty"><b>No se encontró una ACCA con los filtros actuales.</b><br/>Candidatos válidos: {candidates.length}. Si un partido está seleccionado y no tiene análisis, pulsa «Analizar ahora». El motor puede usar el fair_odd guardado en la predicción como respaldo MODEL_FAIR.</div>}</section></>
   if(page==='stats')return <><FilterPanel/><section className="panel"><h3>Estadísticas</h3><p>match_stats: <b>{statsCount}</b> · Predicciones: <b>{predictions.length}</b> · MODEL_FAIR: <b>{odds.length}</b> · Candidatos actuales: <b>{candidates.length}</b>.</p></section></>
   if(page==='history')return <><FilterPanel/><section className="panel"><h3>Historial</h3>{matches.filter(m=>m.home_score!=null&&m.away_score!=null).slice(-200).reverse().map(m=><article className="match" key={m.id}><div><b>{matchName(m)}</b><small>{leagueMap.get(String(m.league_id))?.name||'—'} · {fmt(m.kickoff_at)}</small></div><strong>{m.home_score}–{m.away_score}</strong></article>)}</section></>
   return <><FilterPanel/><section className="panel"><h3>Dashboard</h3><p>TheSportsDB Premium · datos verificables · el análisis se ejecuta por lotes para cubrir todos los partidos próximos.</p></section></>
