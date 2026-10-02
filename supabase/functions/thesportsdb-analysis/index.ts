@@ -23,8 +23,8 @@ Deno.serve(async(req)=>{
   if(!ids.length)return out({ok:false,error:"fixture_ids is required"},400);
 
   const [mr,hr,markets]=await Promise.all([
-   db.from("matches").select("id,external_id,kickoff_at,home_team_id,away_team_id,home_score,away_score").in("external_id",ids),
-   db.from("matches").select("id,home_team_id,away_team_id,kickoff_at,home_score,away_score").not("home_score","is",null).not("away_score","is",null).order("kickoff_at",{ascending:false}).limit(5000),
+   db.from("matches").select("id,external_id,league_id,kickoff_at,home_team_id,away_team_id,home_score,away_score").in("external_id",ids),
+   db.from("matches").select("id,league_id,home_team_id,away_team_id,kickoff_at,home_score,away_score").not("home_score","is",null).not("away_score","is",null).order("kickoff_at",{ascending:false}).limit(5000),
    db.from("markets").select("id,code,name,category").eq("is_active",true)
   ]);
   if(mr.error||hr.error||markets.error)return out({ok:false,error:(mr.error||hr.error||markets.error)?.message||"Database read failed",stage:"load"},500);
@@ -34,7 +34,10 @@ Deno.serve(async(req)=>{
   const findMarket=(codes:string[])=>{for(const c of codes){const id=mids.get(c.toUpperCase());if(id)return id}const wanted=codes.map(x=>x.toUpperCase());return marketRows.find((m:any)=>wanted.includes(String(m.name||"").toUpperCase()))?.id||null};
   const history=hr.data||[];
   const byTeam=new Map<string,any[]>();
+  const byLeague=new Map<string,any[]>();
   for(const g of history){
+   const leagueKey=String(g.league_id||"");
+   if(leagueKey){const la=byLeague.get(leagueKey)||[];if(la.length<100)la.push(g);byLeague.set(leagueKey,la)}
    for(const teamId of [g.home_team_id,g.away_team_id]){
     const k=String(teamId);const arr=byTeam.get(k)||[];if(arr.length<10)arr.push(g);byTeam.set(k,arr);
    }
@@ -42,30 +45,35 @@ Deno.serve(async(req)=>{
 
   const generated:any[]=[];
   for(const m of (mr.data||[])){
-   const home=byTeam.get(String(m.home_team_id))||[];
-   const away=byTeam.get(String(m.away_team_id))||[];
-   const all=[...home,...away],rows:any[]=[];
+   const teamHome=byTeam.get(String(m.home_team_id))||[];
+   const teamAway=byTeam.get(String(m.away_team_id))||[];
+   const leagueHistory=byLeague.get(String(m.league_id||""))||[];
+   // Prefer team history; fall back to league history when a newly imported team has no completed games.
+   // This keeps the model data-driven instead of returning an apparently successful 0/0 analysis.
+   const home=teamHome.length>=3?teamHome:leagueHistory;
+   const away=teamAway.length>=3?teamAway:leagueHistory;
+   const all=[...new Map([...home,...away].map(g=>[String(g.id),g])).values()];
+   const rows:any[]=[];
    const resultId=findMarket(["MATCH_RESULT","1X2","RESULT"]);
-   if(resultId){
-    const hw=rate(home.map(g=>String(g.home_team_id)===String(m.home_team_id)?Number(g.home_score)>Number(g.away_score):Number(g.away_score)>Number(g.home_score)));
-    const aw=rate(away.map(g=>String(g.home_team_id)===String(m.away_team_id)?Number(g.home_score)>Number(g.away_score):Number(g.away_score)>Number(g.home_score)));
+   if(resultId&&home.length&&away.length){
+    const hw=rate(home.map(g=>String(g.home_team_id)===String(m.home_team_id)?Number(g.home_score)>Number(g.away_score):String(g.away_team_id)===String(m.home_team_id)?Number(g.away_score)>Number(g.home_score):Number(g.home_score)>Number(g.away_score)));
+    const aw=rate(away.map(g=>String(g.home_team_id)===String(m.away_team_id)?Number(g.home_score)>Number(g.away_score):String(g.away_team_id)===String(m.away_team_id)?Number(g.away_score)>Number(g.home_score):Number(g.away_score)>Number(g.home_score)));
     const dr=rate(all.map(g=>Number(g.home_score)===Number(g.away_score)));
     if(hw!==null&&aw!==null&&dr!==null){
      const raw=[.2+.55*hw+.25*(1-aw),.15+.7*dr,.2+.55*aw+.25*(1-hw)],sum=raw.reduce((a,b)=>a+b,0);
-     [["Home",raw[0]/sum],["Draw",raw[1]/sum],["Away",raw[2]/sum]].forEach(([selection,p]:any)=>{const probability=clamp(Number(p));rows.push({match_id:m.id,market_id:resultId,selection,probability,fair_odd:Number((1/probability).toFixed(3)),confidence:probability,model_version:"thesportsdb-form-v3",generated_at:new Date().toISOString()})});
+     [["Home",raw[0]/sum],["Draw",raw[1]/sum],["Away",raw[2]/sum]].forEach(([selection,p]:any)=>{const probability=clamp(Number(p));rows.push({match_id:m.id,market_id:resultId,selection,probability,fair_odd:Number((1/probability).toFixed(3)),confidence:probability,model_version:"thesportsdb-form-v4",generated_at:new Date().toISOString()})});
     }
    }
    const totals=all.map(g=>Number(g.home_score)+Number(g.away_score)).filter(Number.isFinite),btts=all.map(g=>Number(g.home_score)>0&&Number(g.away_score)>0);
    const simple:[[string,string,number|null,string[]],[string,string,number|null,string[]],[string,string,number|null,string[]]]=[
     ["BTTS_YES","Yes",rate(btts),["BTTS_YES","BTTS"]],["OVER_1_5","Over 1.5",rate(totals.map(x=>x>1)),["OVER_1_5"]],["OVER_2_5","Over 2.5",rate(totals.map(x=>x>2)),["OVER_2_5"]]
    ];
-   for(const [,selection,p,codes] of simple){const id=findMarket(codes);if(!id||p===null)continue;const probability=clamp(Number(p));rows.push({match_id:m.id,market_id:id,selection,probability,fair_odd:Number((1/probability).toFixed(3)),confidence:probability,model_version:"thesportsdb-form-v3",generated_at:new Date().toISOString()})}
+   for(const [,selection,p,codes] of simple){const id=findMarket(codes);if(!id||p===null)continue;const probability=clamp(Number(p));rows.push({match_id:m.id,market_id:id,selection,probability,fair_odd:Number((1/probability).toFixed(3)),confidence:probability,model_version:"thesportsdb-form-v4",generated_at:new Date().toISOString()})}
    const unique=[...new Map(rows.map(r=>[`${r.market_id}|${r.selection}`,r])).values()];
-   generated.push({match:m,history:all.length,rows:unique});
+   generated.push({match:m,history:all.length,home_history:teamHome.length,away_history:teamAway.length,league_history:leagueHistory.length,fallback_used:teamHome.length<3||teamAway.length<3,rows:unique});
   }
 
   const matchIds=generated.map(x=>x.match.id);
-  // One delete per table instead of two deletes per match.
   for(const idsChunk of chunks(matchIds,200)){
    const d1=await db.from("predictions").delete().in("match_id",idsChunk);if(d1.error)throw new Error(`prediction delete: ${d1.error.message}`);
    const d2=await db.from("odds").delete().in("match_id",idsChunk).eq("bookmaker","MODEL_FAIR");if(d2.error)throw new Error(`model fair delete: ${d2.error.message}`);
@@ -76,7 +84,7 @@ Deno.serve(async(req)=>{
   for(const rows of chunks(predictionRows,500)){if(!rows.length)continue;const r=await db.from("predictions").insert(rows);if(r.error)throw new Error(`prediction insert: ${r.error.message}`)}
   for(const rows of chunks(oddsRows,500)){if(!rows.length)continue;const r=await db.from("odds").insert(rows);if(r.error)throw new Error(`odds insert: ${r.error.message}`)}
 
-  const result=generated.map(x=>({fixture:x.match.external_id,history:x.history,predictions:x.rows.length,predictionsSaved:x.rows.length,oddsSaved:x.rows.length,...(!x.rows.length?{warning:"No sufficient historical results for model generation"}:{})}));
+  const result=generated.map(x=>({fixture:x.match.external_id,history:x.history,home_history:x.home_history,away_history:x.away_history,league_history:x.league_history,fallback_used:x.fallback_used,predictions:x.rows.length,predictionsSaved:x.rows.length,oddsSaved:x.rows.length,...(!x.rows.length?{warning:"No active markets or no historical results available for this fixture"}:{})}));
   return out({ok:true,user_id:user.data.user.id,requested:ids.length,resolved:generated.length,predictions_saved:predictionRows.length,odds_saved:oddsRows.length,odds_source:"MODEL_FAIR",warning:"MODEL_FAIR is a calculated fair price, not a bookmaker quote",generated:result});
  }catch(error){return out({ok:false,error:error instanceof Error?error.message:String(error),stage:"unhandled"},500)}
 });
