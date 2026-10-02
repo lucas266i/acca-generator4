@@ -26,7 +26,7 @@ jobs:
         run: |
           response=$(curl --fail-with-body --silent --show-error \
             --request POST \
-            --url "$SUPABASE_URL/functions/v1/thesportsdb-sync" \
+            --url "$SUPABASE_URL/functions/v1/thesportsdb-sync-v2" \
             --header "apikey: $SUPABASE_ANON_KEY" \
             --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
             --header "Content-Type: application/json" \
