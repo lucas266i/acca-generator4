@@ -1,2 +1,2 @@
-// Production entrypoint: repaired ACCA Builder with selectable matches and on-demand analysis.
-export { default } from './AppFixed4'
+// Production entrypoint: repaired ACCA flow with selectable matches, analysis and ACCA generation.
+export { default } from './AppRepair'
