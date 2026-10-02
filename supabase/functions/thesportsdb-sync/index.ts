@@ -4,47 +4,96 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const API = "https://www.thesportsdb.com/api/v1/json";
 const CORS = {"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type","Access-Control-Allow-Methods":"GET, POST, OPTIONS"};
 const out=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{...CORS,"Content-Type":"application/json"}});
+const chunk=<T>(items:T[],size:number)=>Array.from({length:Math.ceil(items.length/size)},(_,i)=>items.slice(i*size,(i+1)*size));
 
 async function tsdb(path:string,key:string){
   const r=await fetch(`${API}/${encodeURIComponent(key)}/${path}`);
   const text=await r.text(); let data:any;
   try{data=JSON.parse(text)}catch{throw new Error(`TheSportsDB returned non-JSON (${r.status})`)}
-  if(!r.ok)throw new Error(`TheSportsDB HTTP ${r.status}`); return data;
+  if(!r.ok)throw new Error(`TheSportsDB HTTP ${r.status}`);
+  return data;
 }
 function isoDate(offset:number){const d=new Date();d.setUTCHours(0,0,0,0);d.setUTCDate(d.getUTCDate()+offset);return d.toISOString().slice(0,10)}
 
 Deno.serve(async req=>{
- if(req.method==='OPTIONS')return new Response('ok',{headers:CORS});
- if(!['GET','POST'].includes(req.method))return out({ok:false,error:'Method not allowed'},405);
- const key=Deno.env.get('THESPORTSDB_API_KEY'),url=Deno.env.get('SUPABASE_URL'),service=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
- if(!key||!url||!service)return out({ok:false,error:'Missing server configuration'},500);
- const db=createClient(url,service,{auth:{persistSession:false,autoRefreshToken:false}});
- let body:any={};try{if(req.method==='POST')body=await req.json()}catch{}
- const action=String(body.action??new URL(req.url).searchParams.get('action')??'sync_all');
- if(action!=='sync_all')return out({ok:false,error:'Unknown action'},400);
- const errors:string[]=[];let eventsFetched=0,matchesSaved=0,teamsSaved=0,leaguesSaved=0;
- const leagueCache=new Map<string,string>(),teamCache=new Map<string,string>();
- try{
-  // Fetch the eight days concurrently. Database writes remain controlled, but network latency is no longer cumulative.
-  const days=await Promise.all(Array.from({length:8},(_,i)=>tsdb(`eventsday.php?d=${isoDate(i)}&s=Soccer`,key).then(data=>({date:isoDate(i),events:Array.isArray(data?.events)?data.events:[]})).catch(err=>({date:isoDate(i),events:[],error:err}))));
-  for(const day of days){
-   if(day.error){errors.push(`${day.date}: ${day.error instanceof Error?day.error.message:String(day.error)}`);continue}
-   eventsFetched+=day.events.length;
-   for(const e of day.events){
-    try{
-     const eventId=e?.idEvent?String(e.idEvent):'',homeName=String(e?.strHomeTeam??'').trim(),awayName=String(e?.strAwayTeam??'').trim(),leagueName=String(e?.strLeague??'').trim();
-     if(!eventId||!homeName||!awayName||!leagueName)continue;
-     const leagueExt=`tsdb:${String(e.idLeague??leagueName).trim()}`;let leagueId=leagueCache.get(leagueExt);
-     if(!leagueId){const existing=await db.from('leagues').select('id').eq('external_id',leagueExt).maybeSingle();if(existing.error)throw existing.error;leagueId=existing.data?.id;
-      if(!leagueId){const ins=await db.from('leagues').insert({external_id:leagueExt,name:leagueName,country:e.strCountry?String(e.strCountry):null}).select('id').single();if(ins.error)throw ins.error;leagueId=ins.data.id;leaguesSaved++} leagueCache.set(leagueExt,leagueId)}
-     const ensureTeam=async(name:string,external:string,country:string|null)=>{const cached=teamCache.get(external);if(cached)return cached;const existing=await db.from('teams').select('id').eq('external_id',external).maybeSingle();if(existing.error)throw existing.error;let id=existing.data?.id;if(!id){const ins=await db.from('teams').insert({league_id:leagueId,name,short_name:null,country,external_id:external,is_active:true}).select('id').single();if(ins.error)throw ins.error;id=ins.data.id;teamsSaved++}teamCache.set(external,id);return id};
-     const homeId=await ensureTeam(homeName,`tsdb:${String(e.idHomeTeam??homeName)}`,e.strCountry?String(e.strCountry):null),awayId=await ensureTeam(awayName,`tsdb:${String(e.idAwayTeam??awayName)}`,e.strCountry?String(e.strCountry):null);
-     const dateTime=`${e.dateEvent}T${String(e.strTime??'00:00:00').slice(0,8)}Z`,hs=e.intHomeScore!==null&&e.intHomeScore!==undefined&&e.intHomeScore!==''?Number(e.intHomeScore):null,as=e.intAwayScore!==null&&e.intAwayScore!==undefined&&e.intAwayScore!==''?Number(e.intAwayScore):null;
-     const up=await db.from('matches').upsert({league_id:leagueId,home_team_id:homeId,away_team_id:awayId,kickoff_at:new Date(dateTime).toISOString(),status:hs!==null&&as!==null?'FT':'NS',home_score:Number.isFinite(hs)?hs:null,away_score:Number.isFinite(as)?as:null,external_id:eventId,season:String(e.strSeason??''),round:e.intRound?String(e.intRound):null},{onConflict:'external_id'}).select('id').single();
-     if(up.error)throw up.error;if(up.data?.id)matchesSaved++;
-    }catch(err){errors.push(`${eventId||'event'}: ${err instanceof Error?err.message:String(err)}`)}
-   }
+  if(req.method==='OPTIONS')return new Response('ok',{headers:CORS});
+  if(!['GET','POST'].includes(req.method))return out({ok:false,error:'Method not allowed'},405);
+  const key=Deno.env.get('THESPORTSDB_API_KEY'),url=Deno.env.get('SUPABASE_URL'),service=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if(!key||!url||!service)return out({ok:false,error:'Missing server configuration'},500);
+  const db=createClient(url,service,{auth:{persistSession:false,autoRefreshToken:false}});
+  let body:any={};try{if(req.method==='POST')body=await req.json()}catch{}
+  const action=String(body.action??new URL(req.url).searchParams.get('action')??'sync_all');
+  if(action!=='sync_all')return out({ok:false,error:'Unknown action'},400);
+
+  const errors:string[]=[];let eventsFetched=0,leaguesSaved=0,teamsSaved=0,matchesSaved=0;
+  try{
+    // Network calls are parallel. Database work is deliberately batched to avoid
+    // one SELECT/INSERT round-trip per event, which previously made sync appear stuck.
+    const days=await Promise.all(Array.from({length:8},(_,i)=>
+      tsdb(`eventsday.php?d=${isoDate(i)}&s=Soccer`,key)
+        .then(data=>({date:isoDate(i),events:Array.isArray(data?.events)?data.events:[]}))
+        .catch(error=>({date:isoDate(i),events:[],error}))
+    ));
+
+    const events:any[]=[];
+    for(const day of days){
+      if(day.error){errors.push(`${day.date}: ${day.error instanceof Error?day.error.message:String(day.error)}`);continue;}
+      eventsFetched+=day.events.length;
+      events.push(...day.events);
+    }
+
+    const valid=events.filter(e=>e?.idEvent&&e?.strHomeTeam&&e?.strAwayTeam&&e?.strLeague);
+    const uniqueLeagues=[...new Map(valid.map(e=>{
+      const external_id=`tsdb:${String(e.idLeague??e.strLeague).trim()}`;
+      return [external_id,{external_id,name:String(e.strLeague).trim(),country:e.strCountry?String(e.strCountry):null}];
+    })).values()];
+
+    // Upsert leagues in bulk and read their ids once.
+    for(const rows of chunk(uniqueLeagues,200)){
+      const r=await db.from('leagues').upsert(rows,{onConflict:'external_id'}).select('id,external_id');
+      if(r.error)throw r.error;
+    }
+    const leagueKeys=uniqueLeagues.map(x=>x.external_id);
+    const leagueRows=leagueKeys.length?await db.from('leagues').select('id,external_id').in('external_id',leagueKeys):{data:[],error:null};
+    if(leagueRows.error)throw leagueRows.error;
+    const leagueMap=new Map((leagueRows.data||[]).map((x:any)=>[String(x.external_id),x.id]));
+    leaguesSaved=uniqueLeagues.length;
+
+    const teamRows=[...new Map(valid.flatMap(e=>{
+      const leagueId=leagueMap.get(`tsdb:${String(e.idLeague??e.strLeague).trim()}`),country=e.strCountry?String(e.strCountry):null;
+      const home={external_id:`tsdb:${String(e.idHomeTeam??e.strHomeTeam)}`,league_id:leagueId,name:String(e.strHomeTeam).trim(),short_name:null,country,is_active:true};
+      const away={external_id:`tsdb:${String(e.idAwayTeam??e.strAwayTeam)}`,league_id:leagueId,name:String(e.strAwayTeam).trim(),short_name:null,country,is_active:true};
+      return [[home.external_id,home],[away.external_id,away]] as any;
+    })).values()].filter((x:any)=>x.league_id);
+
+    for(const rows of chunk(teamRows,300)){
+      const r=await db.from('teams').upsert(rows,{onConflict:'external_id'}).select('id,external_id');
+      if(r.error)throw r.error;
+    }
+    teamsSaved=teamRows.length;
+    const teamKeys=teamRows.map((x:any)=>x.external_id);
+    const teamDb=teamKeys.length?await db.from('teams').select('id,external_id').in('external_id',teamKeys):{data:[],error:null};
+    if(teamDb.error)throw teamDb.error;
+    const teamMap=new Map((teamDb.data||[]).map((x:any)=>[String(x.external_id),x.id]));
+
+    const matchRows=valid.map(e=>{
+      const leagueId=leagueMap.get(`tsdb:${String(e.idLeague??e.strLeague).trim()}`);
+      const homeId=teamMap.get(`tsdb:${String(e.idHomeTeam??e.strHomeTeam)}`);
+      const awayId=teamMap.get(`tsdb:${String(e.idAwayTeam??e.strAwayTeam)}`);
+      const dateTime=`${e.dateEvent}T${String(e.strTime??'00:00:00').slice(0,8)}Z`;
+      const hs=e.intHomeScore!==null&&e.intHomeScore!==undefined&&e.intHomeScore!==''?Number(e.intHomeScore):null;
+      const as=e.intAwayScore!==null&&e.intAwayScore!==undefined&&e.intAwayScore!==''?Number(e.intAwayScore):null;
+      return {league_id:leagueId,home_team_id:homeId,away_team_id:awayId,kickoff_at:new Date(dateTime).toISOString(),status:hs!==null&&as!==null?'FT':'NS',home_score:Number.isFinite(hs)?hs:null,away_score:Number.isFinite(as)?as:null,external_id:String(e.idEvent),season:String(e.strSeason??''),round:e.intRound?String(e.intRound):null};
+    }).filter(x=>x.league_id&&x.home_team_id&&x.away_team_id);
+
+    for(const rows of chunk(matchRows,300)){
+      const r=await db.from('matches').upsert(rows,{onConflict:'external_id'});
+      if(r.error)throw r.error;
+      matchesSaved+=rows.length;
+    }
+
+    return out({ok:errors.length===0,action,days:8,events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors});
+  }catch(error){
+    return out({ok:false,action,error:error instanceof Error?error.message:String(error),events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors},502);
   }
-  return out({ok:errors.length===0,action,days:8,events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors});
- }catch(err){return out({ok:false,action,error:err instanceof Error?err.message:String(err),events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors},502)}
 });
