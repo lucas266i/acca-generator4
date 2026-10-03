@@ -55,7 +55,7 @@ Deno.serve(async req=>{
     }
     for(const c of chunks(rows,500)){
       if(!c.length)continue;
-      const r=await db.from('match_lineups').upsert(c,{onConflict:'match_id,player_name,team_id'});
+      const r=await db.from('match_lineups').upsert(c,{onConflict:'match_id,player_name'});
       if(r.error)throw new Error(`match_lineups upsert: ${r.error.message}`);
     }
     return out({ok:errors.length===0,user_id:user.data.user.id,events_requested:(matches.data||[]).length,events_fetched:fetched,events_with_lineup:eventsWithLineup,lineup_rows_saved:rows.length,errors});
