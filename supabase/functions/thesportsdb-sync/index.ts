@@ -23,15 +23,18 @@ Deno.serve(async req=>{
   const db=createClient(url,service,{auth:{persistSession:false,autoRefreshToken:false}});
   let body:any={};try{if(req.method==='POST')body=await req.json()}catch{}
   const action=String(body.action??new URL(req.url).searchParams.get('action')??'sync_all');
+  const requestedDays=Number(body.days??new URL(req.url).searchParams.get('days')??7);
+  const daysCount=Math.max(1,Math.min(7,Number.isFinite(requestedDays)?Math.floor(requestedDays):7));
   if(action!=='sync_all')return out({ok:false,error:'Unknown action'},400);
 
   const errors:string[]=[];let eventsFetched=0,leaguesSaved=0,teamsSaved=0,matchesSaved=0;
   try{
-    const days=await Promise.all(Array.from({length:8},(_,i)=>
-      tsdb(`eventsday.php?d=${isoDate(i)}&s=Soccer`,key)
-        .then(data=>({date:isoDate(i),events:Array.isArray(data?.events)?data.events:[]}))
-        .catch(error=>({date:isoDate(i),events:[],error}))
-    ));
+    const days=await Promise.all(Array.from({length:daysCount},(_,i)=>{
+      const date=isoDate(i);
+      return tsdb(`eventsday.php?d=${date}&s=Soccer`,key)
+        .then(data=>({date,events:Array.isArray(data?.events)?data.events:[]}))
+        .catch(error=>({date,events:[],error}));
+    }));
 
     const events:any[]=[];
     for(const day of days){
@@ -40,7 +43,7 @@ Deno.serve(async req=>{
       events.push(...day.events);
     }
 
-    const valid=events.filter(e=>e?.idEvent&&e?.strHomeTeam&&e?.strAwayTeam&&e?.strLeague);
+    const valid=[...new Map(events.filter(e=>e?.idEvent&&e?.strHomeTeam&&e?.strAwayTeam&&e?.strLeague).map(e=>[String(e.idEvent),e])).values()];
     const uniqueLeagues=[...new Map(valid.map(e=>{
       const external_id=`tsdb:${String(e.idLeague??e.strLeague).trim()}`;
       return [external_id,{external_id,name:String(e.strLeague).trim(),country:e.strCountry?String(e.strCountry):null}];
@@ -78,9 +81,10 @@ Deno.serve(async req=>{
       const homeId=teamMap.get(`tsdb:${String(e.idHomeTeam??e.strHomeTeam)}`);
       const awayId=teamMap.get(`tsdb:${String(e.idAwayTeam??e.strAwayTeam)}`);
       const dateTime=`${e.dateEvent}T${String(e.strTime??'00:00:00').slice(0,8)}Z`;
+      const parsedDate=new Date(dateTime);
       const hs=e.intHomeScore!==null&&e.intHomeScore!==undefined&&e.intHomeScore!==''?Number(e.intHomeScore):null;
       const as=e.intAwayScore!==null&&e.intAwayScore!==undefined&&e.intAwayScore!==''?Number(e.intAwayScore):null;
-      return {league_id:leagueId,home_team_id:homeId,away_team_id:awayId,kickoff_at:new Date(dateTime).toISOString(),status:hs!==null&&as!==null?'FT':'NS',home_score:Number.isFinite(hs)?hs:null,away_score:Number.isFinite(as)?as:null,external_id:String(e.idEvent),season:String(e.strSeason??''),round:e.intRound?String(e.intRound):null};
+      return {league_id:leagueId,home_team_id:homeId,away_team_id:awayId,kickoff_at:Number.isNaN(parsedDate.getTime())?new Date().toISOString():parsedDate.toISOString(),status:hs!==null&&as!==null?'FT':'NS',home_score:Number.isFinite(hs)?hs:null,away_score:Number.isFinite(as)?as:null,external_id:String(e.idEvent),season:String(e.strSeason??''),round:e.intRound?String(e.intRound):null};
     }).filter(x=>x.league_id&&x.home_team_id&&x.away_team_id);
 
     for(const rows of chunk(matchRows,300)){
@@ -89,8 +93,8 @@ Deno.serve(async req=>{
       matchesSaved+=rows.length;
     }
 
-    return out({ok:errors.length===0,action,days:8,events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors});
+    return out({ok:errors.length===0,action,days:daysCount,events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors});
   }catch(error){
-    return out({ok:false,partial:true,action,error:error instanceof Error?error.message:String(error),events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors},200);
+    return out({ok:false,partial:true,action,days:daysCount,error:error instanceof Error?error.message:String(error),events_fetched:eventsFetched,leagues_saved:leaguesSaved,teams_saved:teamsSaved,matches_saved:matchesSaved,errors},200);
   }
 });
