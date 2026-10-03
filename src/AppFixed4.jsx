@@ -58,7 +58,7 @@ export default function AppFixed4(){
   const e=new Date(s)
   if(dateRange==='today')e.setDate(e.getDate()+1)
   else if(dateRange==='tomorrow'){s.setDate(s.getDate()+1);e.setDate(e.getDate()+1)}
-  else if(dateRange.startsWith('next_'))e.setDate(e.getDate()+Number(dateRange.split('_')[1])+1)
+  else if(dateRange.startsWith('next_'))e.setDate(e.getDate()+Number(dateRange.split('_')[1]))
   else e.setFullYear(e.getFullYear()+1)
   return{s,e}
  },[dateRange])
