@@ -13,7 +13,7 @@ create table if not exists public.match_lineups (
   source text not null default 'TheSportsDB',
   raw_data jsonb,
   updated_at timestamptz not null default now(),
-  unique(match_id, player_name, team_id)
+  unique(match_id, player_name)
 );
 
 create index if not exists idx_match_lineups_match on public.match_lineups(match_id);
